@@ -8,9 +8,12 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -19,8 +22,48 @@ jobs:
           git config user.name "$GITHUB_ACTOR"
           git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
 
-      - name: Run chart-releaser
-        uses: helm/chart-releaser-action@v1.7.0
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Install chart-releaser
+        run: |
+          CR_VERSION=v1.8.1
+          curl -sSL "https://github.com/helm/chart-releaser/releases/download/${CR_VERSION}/chart-releaser_${CR_VERSION#v}_linux_amd64.tar.gz" \
+            | tar -xz cr
+          sudo mv cr /usr/local/bin/cr
+
+      - name: Package charts
+        run: helm package charts/dsao --destination .cr-release-packages
+
+      # Attach the .tgz at release creation time — a single atomic API call.
+      # This is required for GitHub immutable releases: once a release is
+      # published, assets cannot be added in a second call.
+      - name: Create GitHub release (immutable-safe)
         env:
-          CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-    permissions: write-all
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for pkg in .cr-release-packages/*.tgz; do
+            tag=$(basename "$pkg" .tgz)
+            if gh release view "$tag" &>/dev/null; then
+              echo "Release $tag already exists, skipping."
+            else
+              gh release create "$tag" "$pkg" --title "$tag" --notes "Release $tag"
+            fi
+          done
+
+      - name: Update gh-pages index
+        env:
+          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          owner="${GITHUB_REPOSITORY%/*}"
+          repo="${GITHUB_REPOSITORY#*/}"
+          # cr does not create the index directory itself (helm/chart-releaser#187)
+          mkdir -p .cr-index
+          cr index \
+            --owner "$owner" \
+            --git-repo "$repo" \
+            --package-path .cr-release-packages \
+            --index-path .cr-index/index.yaml \
+            --pages-branch gh-pages \
+            --token "$CR_TOKEN" \
+            --push
