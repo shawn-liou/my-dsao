@@ -44,6 +44,7 @@ spec:
               - /bin/bash
               - -c
               - |
+                exec > /var/log/poststart.log 2>&1
                 mkdir /var/run/crio
                 ln -s /var/lib/crio/crio.sock /var/run/crio/crio.sock
                 sleep 30s
